@@ -236,7 +236,7 @@ class DualCameraApp(QtWidgets.QMainWindow):
         camera_layout = QtWidgets.QHBoxLayout()
 
         cam1_container = QtWidgets.QVBoxLayout()
-        cam1_label = QtWidgets.QLabel('Camera 1 - Length & Width')
+        cam1_label = QtWidgets.QLabel('Camera 1 - Length')
         cam1_label.setAlignment(QtCore.Qt.AlignCenter)
         cam1_label.setStyleSheet('font-size: 14px; font-weight: bold; padding: 5px;')
         cam1_container.addWidget(cam1_label)
@@ -250,7 +250,7 @@ class DualCameraApp(QtWidgets.QMainWindow):
         camera_layout.addLayout(cam1_container)
 
         cam2_container = QtWidgets.QVBoxLayout()
-        cam2_label = QtWidgets.QLabel('Camera 2 - Height')
+        cam2_label = QtWidgets.QLabel('Camera 2 - Width & Height')
         cam2_label.setAlignment(QtCore.Qt.AlignCenter)
         cam2_label.setStyleSheet('font-size: 14px; font-weight: bold; padding: 5px;')
         cam2_container.addWidget(cam2_label)
@@ -517,7 +517,7 @@ class DualCameraApp(QtWidgets.QMainWindow):
         """Generate dieline from captured measurements by launching gen_cartondieline.py.
 
         Measurements in this PyQt app are in millimetres and will be passed
-        directly to the external dieline generator. Use 30 mm glue flap.
+        directly to the external dieline generator.
         """
         if self.width is None or self.height is None or self.length is None:
             QMessageBox.warning(self, 'Error', 'Please capture measurements first')
@@ -534,8 +534,7 @@ class DualCameraApp(QtWidgets.QMainWindow):
             args = [sys.executable, script_path,
                     '--length', f'{length_mm}',
                     '--width', f'{width_mm}',
-                    '--height', f'{height_mm}',
-                    '--glue', '30']
+                    '--height', f'{height_mm}']
 
             subprocess.Popen(args)
 

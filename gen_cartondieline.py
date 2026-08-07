@@ -3,7 +3,7 @@ from tkinter import ttk, filedialog, messagebox
 import svgwrite
 
 class DielineGeneratorApp:
-    def __init__(self, root, initial_length=None, initial_width=None, initial_height=None, initial_glue=None):
+    def __init__(self, root, initial_length=None, initial_width=None, initial_height=None):
         self.root = root
         self.root.title("Dynamic Carton Dieline Generator (FEFCO 0201)")
         self.root.geometry("1100x700")
@@ -29,7 +29,6 @@ class DielineGeneratorApp:
         self.initial_length = initial_length
         self.initial_width = initial_width
         self.initial_height = initial_height
-        self.initial_glue = initial_glue
 
         self.current_scale = None  # Holds steady zoom level
         self.setup_ui()
@@ -43,20 +42,15 @@ class DielineGeneratorApp:
         self.var_length = tk.StringVar(value=str(self.initial_length) if self.initial_length is not None else "238")
         self.var_width = tk.StringVar(value=str(self.initial_width) if self.initial_width is not None else "180")
         self.var_height = tk.StringVar(value=str(self.initial_height) if self.initial_height is not None else "80")
-        self.var_glue_flap = tk.StringVar(value=str(self.initial_glue) if self.initial_glue is not None else "30")
-
         # Trace variables for real-time dynamic updates
         self.var_length.trace_add("write", lambda *args: self.update_preview())
         self.var_width.trace_add("write", lambda *args: self.update_preview())
         self.var_height.trace_add("write", lambda *args: self.update_preview())
-        self.var_glue_flap.trace_add("write", lambda *args: self.update_preview())
 
         self.create_input_row("Length (L):", self.var_length)
         self.create_input_row("Width (W):", self.var_width)
         self.create_input_row("Height (H):", self.var_height)
         
-        ttk.Label(self.left_panel, text="Glue Flap Width:").pack(anchor=tk.W, pady=(15, 5))
-        ttk.Entry(self.left_panel, textvariable=self.var_glue_flap).pack(fill=tk.X, pady=(0, 20))
 
         # Save Button
         ttk.Button(self.left_panel, text="Fit to Screen", command=self.reset_scale).pack(fill=tk.X, pady=(10, 5))
@@ -82,9 +76,8 @@ class DielineGeneratorApp:
             L = float(self.var_length.get() or 0)
             W = float(self.var_width.get() or 0)
             H = float(self.var_height.get() or 0)
-            G = float(self.var_glue_flap.get() or 0)
-            if L <= 0 or W <= 0 or H <= 0 or G <= 0: return None
-            return L, W, H, G
+            if L <= 0 or W <= 0 or H <= 0: return None
+            return L, W, H
         except ValueError:
             return None
 
@@ -92,11 +85,13 @@ class DielineGeneratorApp:
         self.current_scale = None
         self.update_preview()
 
-    def generate_paths(self, L, W, H, G):
+    def generate_paths(self, L, W, H):
         """Generates the exact mathematical line segments for cuts and creases"""
         S = 3  # Slot width (gap between flaps) in mm
         taper = 5  # Glue flap taper in mm
-        
+        # No user-configurable glue flap width — use zero inset
+        G = 0
+
         x1 = G
         x2 = G + L
         x3 = G + L + W
@@ -157,13 +152,13 @@ class DielineGeneratorApp:
         self.canvas.delete("all")
         dims = self.get_dimensions()
         if not dims: return
-        L, W, H, G = dims
+        L, W, H = dims
         
         c_width = self.canvas.winfo_width()
         c_height = self.canvas.winfo_height()
         if c_width <= 1 or c_height <= 1: return
 
-        cuts, creases, total_width, total_height = self.generate_paths(L, W, H, G)
+        cuts, creases, total_width, total_height = self.generate_paths(L, W, H)
 
         # --- Dynamic Scaling Logic ---
         padding = 40
@@ -205,7 +200,7 @@ class DielineGeneratorApp:
         if not dims: 
             messagebox.showwarning("Warning", "Invalid dimensions.")
             return
-        L, W, H, G = dims
+        L, W, H = dims
 
         file_path = filedialog.asksaveasfilename(
             defaultextension=".svg",
@@ -214,7 +209,7 @@ class DielineGeneratorApp:
         )
         if not file_path: return
 
-        cuts, creases, total_w, total_h = self.generate_paths(L, W, H, G)
+        cuts, creases, total_w, total_h = self.generate_paths(L, W, H)
         
         dwg = svgwrite.Drawing(file_path, size=(f"{total_w}mm", f"{total_h}mm"), viewBox=f"0 0 {total_w} {total_h}")
 
@@ -239,7 +234,6 @@ if __name__ == "__main__":
     parser.add_argument('--length', type=float, help='Initial length in mm')
     parser.add_argument('--width', type=float, help='Initial width in mm')
     parser.add_argument('--height', type=float, help='Initial height in mm')
-    parser.add_argument('--glue', type=float, default=30.0, help='Glue flap width in mm')
     args = parser.parse_args()
 
     root = tk.Tk()
@@ -248,6 +242,5 @@ if __name__ == "__main__":
         initial_length=args.length,
         initial_width=args.width,
         initial_height=args.height,
-        initial_glue=args.glue,
     )
     root.mainloop()
