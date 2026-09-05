@@ -85,7 +85,7 @@ class ObjectDetector:
                 boxes = result.boxes.xyxy.cpu().numpy()  # Bounding boxes in xyxy format
                 confidences = result.boxes.conf.cpu().numpy()  # Confidence scores
                 class_ids = result.boxes.cls.cpu().numpy()  # Class IDs
-                
+
                 for i in range(len(boxes)):
                     detection = {
                         'bbox': boxes[i],  # [x1, y1, x2, y2]
