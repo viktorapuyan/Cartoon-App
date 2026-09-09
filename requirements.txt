@@ -4,3 +4,5 @@ torch
 torchvision
 PyQt5
 ultralytics
+matplotlib
+svgwrite

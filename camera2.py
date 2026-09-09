@@ -1,40 +1,37 @@
+"""Standalone camera-2 object-detection entry point."""
+
 import cv2
+
 from object_detector2 import ObjectDetector
 
-# Initialize the object detector
-detector = ObjectDetector(model_path="camera2_segmodel.pt", conf_threshold=0.50)
 
-# Load the model
-if not detector.load_model():
-    print("Failed to load model. Exiting.")
-    exit()
+def main() -> None:
+    detector = ObjectDetector(model_path="camera2_segmodel.pt", conf_threshold=0.50)
+    if not detector.load_model():
+        print("Failed to load model. Exiting.")
+        return
 
-cap = cv2.VideoCapture(1)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    camera = cv2.VideoCapture(1)
+    camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    if not camera.isOpened():
+        print("Error: Could not open camera.")
+        return
 
-if not cap.isOpened():
-    print("Error: Could not open camera.")
-    exit()
+    try:
+        while True:
+            received, frame = camera.read()
+            if not received:
+                print("Error: Can't receive frame.")
+                break
+            annotated_frame, _ = detector.detect(frame, draw_boxes=True)
+            cv2.imshow("Camera 2", annotated_frame)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+    finally:
+        camera.release()
+        cv2.destroyAllWindows()
 
 
-while True:
-    ret, frame = cap.read()
-
-    if not ret:
-        print("Error: Can't receive frame.")
-        break
-
-    # Run object detection on the frame
-    annotated_frame, detections = detector.detect(frame, draw_boxes=True)
-
-    # Display the resulting frame with detections
-    cv2.imshow('Camera 2', annotated_frame)
-
-    # Exit on 'q' key press
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
-
-# Release resources and close windows
-cap.release()
-cv2.destroyAllWindows()
+if __name__ == "__main__":
+    main()

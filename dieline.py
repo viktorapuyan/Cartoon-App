@@ -11,11 +11,7 @@ Date: January 29, 2026
 
 from typing import Tuple, List, Dict, Any, Optional
 import os
-import math
-import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-from matplotlib.path import Path
 
 
 class DielinePanel:

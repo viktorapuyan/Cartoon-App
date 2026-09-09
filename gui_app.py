@@ -11,14 +11,22 @@ Features:
 
 import os
 import sys
+import torch
 import cv2
 import numpy as np
-import torch
 import subprocess
 from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtWidgets import QMessageBox
 from PyQt5.QtSvg import QSvgWidget
 from object_detector import ObjectDetector  
+
+
+CAMERA_WIDTH = 640
+CAMERA_HEIGHT = 480
+ARUCO_MARKER_SIZE_MM = 50.0
+DETECTION_CONFIDENCE = 0.50
+NOT_ALLOWED_CLASS = 'Not allowed'
+CLEARANCE_MM = 10.0
 
 
 def cv2_to_qimage(frame: np.ndarray) -> QtGui.QImage:
@@ -193,7 +201,7 @@ class DielinePreviewWindow(QtWidgets.QMainWindow):
 class DualCameraApp(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('Carton Measurement System')
+        self.setWindowTitle('Cartoon')
         self.resize(1000, 600)
 
         self.cap1 = None
@@ -204,9 +212,6 @@ class DualCameraApp(QtWidgets.QMainWindow):
         self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50)
         self.aruco_params = cv2.aruco.DetectorParameters()
         self.aruco_detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
-
-        # ArUco marker physical size in millimetres (5 cm = 50 mm)
-        self.ARUCO_MARKER_SIZE_MM = 50.0
 
         # Measurements stored in millimetres
         self.width = None
@@ -333,16 +338,16 @@ class DualCameraApp(QtWidgets.QMainWindow):
         """Initialize both cameras."""
         try:
             self.cap1 = cv2.VideoCapture(0)
-            self.cap1.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            self.cap1.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            self.cap1.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+            self.cap1.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
             print('Camera 1 initialized')
         except Exception as e:
             print(f'Error opening Camera 1: {e}')
 
         try:
             self.cap2 = cv2.VideoCapture(1)
-            self.cap2.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            self.cap2.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            self.cap2.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+            self.cap2.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
             print('Camera 2 initialized')
         except Exception as e:
             print(f'Error opening Camera 2: {e}')
@@ -350,7 +355,7 @@ class DualCameraApp(QtWidgets.QMainWindow):
     def _init_detectors(self):
         """Initialize object detectors for both cameras."""
         try:
-            self.detector1 = ObjectDetector(model_path='camera1_segmodel.pt', conf_threshold=0.50)
+            self.detector1 = ObjectDetector(model_path='camera1_segmodel.pt', conf_threshold=DETECTION_CONFIDENCE)
             if self.detector1.load_model():
                 print('Camera 1 object detector loaded')
             else:
@@ -360,7 +365,7 @@ class DualCameraApp(QtWidgets.QMainWindow):
             self.detector1 = None
 
         try:
-            self.detector2 = ObjectDetector(model_path='camera2_segmodel.pt', conf_threshold=0.50)
+            self.detector2 = ObjectDetector(model_path='camera2_segmodel.pt', conf_threshold=DETECTION_CONFIDENCE)
             if self.detector2.load_model():
                 print('Camera 2 object detector loaded')
             else:
@@ -371,61 +376,56 @@ class DualCameraApp(QtWidgets.QMainWindow):
 
     def _update_frames(self):
         """Update both camera feeds with object detection and ArUco markers."""
-        not_allowed_this_frame = False
+        not_allowed_this_frame = self._process_camera_frame(
+            self.cap1, self.detector1, self.camera1_view, 'pixels_per_mm_cam1'
+        )
+        not_allowed_this_frame |= self._process_camera_frame(
+            self.cap2, self.detector2, self.camera2_view, 'pixels_per_mm_cam2'
+        )
+        self._update_safety_state(not_allowed_this_frame)
 
-        if self.cap1 is not None and self.cap1.isOpened():
-            ret, frame = self.cap1.read()
-            if ret:
-                if self.detector1 is not None:
-                    annotated_frame, detections = self.detector1.detect(frame, draw_boxes=True)
-                    frame = annotated_frame
-                    if any(d['class_name'] == 'Not allowed' for d in detections):
-                        not_allowed_this_frame = True
+    def _process_camera_frame(self, camera, detector, view, calibration_attribute):
+        if camera is None or not camera.isOpened():
+            return False
 
-                corners, ids, rejected = self.aruco_detector.detectMarkers(frame)
-                if ids is not None and len(ids) > 0:
-                    cv2.aruco.drawDetectedMarkers(frame, corners, ids)
-                    marker_corners = corners[0][0]
-                    top_width = np.linalg.norm(marker_corners[0] - marker_corners[1])
-                    bottom_width = np.linalg.norm(marker_corners[3] - marker_corners[2])
-                    marker_width_pixels = (top_width + bottom_width) / 2
-                    self.pixels_per_mm_cam1 = marker_width_pixels / self.ARUCO_MARKER_SIZE_MM
+        received, frame = camera.read()
+        if not received:
+            return False
 
-                qimg = cv2_to_qimage(frame)
-                pixmap = QtGui.QPixmap.fromImage(qimg).scaled(
-                    self.camera1_view.size(),
-                    QtCore.Qt.KeepAspectRatio,
-                    QtCore.Qt.SmoothTransformation,
-                )
-                self.camera1_view.setPixmap(pixmap)
+        not_allowed_detected = False
+        if detector is not None:
+            frame, detections = detector.detect(frame, draw_boxes=True)
+            not_allowed_detected = any(
+                detection['class_name'] == NOT_ALLOWED_CLASS
+                for detection in detections
+            )
 
-        if self.cap2 is not None and self.cap2.isOpened():
-            ret, frame = self.cap2.read()
-            if ret:
-                if self.detector2 is not None:
-                    annotated_frame, detections = self.detector2.detect(frame, draw_boxes=True)
-                    frame = annotated_frame
-                    if any(d['class_name'] == 'Not allowed' for d in detections):
-                        not_allowed_this_frame = True
+        corners, ids, _ = self.aruco_detector.detectMarkers(frame)
+        if ids is not None and len(ids) > 0:
+            cv2.aruco.drawDetectedMarkers(frame, corners, ids)
+            marker_corners = corners[0][0]
+            top_width = np.linalg.norm(marker_corners[0] - marker_corners[1])
+            bottom_width = np.linalg.norm(marker_corners[3] - marker_corners[2])
+            marker_width_pixels = (top_width + bottom_width) / 2
+            setattr(
+                self,
+                calibration_attribute,
+                marker_width_pixels / ARUCO_MARKER_SIZE_MM,
+            )
 
-                corners, ids, rejected = self.aruco_detector.detectMarkers(frame)
-                if ids is not None and len(ids) > 0:
-                    cv2.aruco.drawDetectedMarkers(frame, corners, ids)
-                    marker_corners = corners[0][0]
-                    top_width = np.linalg.norm(marker_corners[0] - marker_corners[1])
-                    bottom_width = np.linalg.norm(marker_corners[3] - marker_corners[2])
-                    marker_width_pixels = (top_width + bottom_width) / 2
-                    self.pixels_per_mm_cam2 = marker_width_pixels / self.ARUCO_MARKER_SIZE_MM
+        self._display_frame(frame, view)
+        return not_allowed_detected
 
-                qimg = cv2_to_qimage(frame)
-                pixmap = QtGui.QPixmap.fromImage(qimg).scaled(
-                    self.camera2_view.size(),
-                    QtCore.Qt.KeepAspectRatio,
-                    QtCore.Qt.SmoothTransformation,
-                )
-                self.camera2_view.setPixmap(pixmap)
+    @staticmethod
+    def _display_frame(frame, view):
+        qimg = cv2_to_qimage(frame)
+        pixmap = QtGui.QPixmap.fromImage(qimg).scaled(
+            view.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation
+        )
+        view.setPixmap(pixmap)
 
-        # Update button states when "Not allowed" detection status changes
+    def _update_safety_state(self, not_allowed_this_frame):
+        """Update controls and status text after processing both cameras."""
         if not_allowed_this_frame != self.not_allowed_active:
             self.not_allowed_active = not_allowed_this_frame
             if not_allowed_this_frame:
@@ -525,7 +525,6 @@ class DualCameraApp(QtWidgets.QMainWindow):
 
         try:
             # Measurements are already in mm; add 10 mm clearance to each
-            CLEARANCE_MM = 10.0
             length_mm = float(self.length) + CLEARANCE_MM
             width_mm = float(self.width) + CLEARANCE_MM
             height_mm = float(self.height) + CLEARANCE_MM
