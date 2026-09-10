@@ -11,6 +11,8 @@ Features:
 
 import os
 import sys
+import ctypes 
+import platform 
 import torch
 import cv2
 import numpy as np
@@ -19,7 +21,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtWidgets import QMessageBox
 from PyQt5.QtSvg import QSvgWidget
 from object_detector import ObjectDetector  
-
+from pathlib import Path
 
 CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 480
@@ -529,11 +531,32 @@ class DualCameraApp(QtWidgets.QMainWindow):
             width_mm = float(self.width) + CLEARANCE_MM
             height_mm = float(self.height) + CLEARANCE_MM
 
-            script_path = os.path.join(os.path.dirname(__file__), 'gen_cartondieline.py')
-            args = [sys.executable, script_path,
-                    '--length', f'{length_mm}',
-                    '--width', f'{width_mm}',
-                    '--height', f'{height_mm}']
+            if getattr(sys, 'frozen', False):
+                # CartonIQ.exe is inside dist/CartonIQ/
+                generator_path = (
+                    Path(sys.executable).resolve().parent.parent
+                    / 'CartonDieline'
+                    / 'CartonDieline.exe'
+                )
+            else:
+                # Development mode
+                generator_path = Path(__file__).resolve().parent / 'gen_cartondieline.py'
+
+            if getattr(sys, 'frozen', False):
+                args = [
+                    str(generator_path),
+                    '--length', str(length_mm),
+                    '--width', str(width_mm),
+                    '--height', str(height_mm),
+                ]
+            else:
+                args = [
+                    sys.executable,
+                    str(generator_path),
+                    '--length', str(length_mm),
+                    '--width', str(width_mm),
+                    '--height', str(height_mm),
+                ]
 
             subprocess.Popen(args)
 
