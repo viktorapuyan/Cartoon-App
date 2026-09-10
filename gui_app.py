@@ -1,27 +1,13 @@
-"""
-gui_app.py
-Simple PyQt5 GUI with dual camera views and control buttons.
-
-Features:
-- Two camera windows displayed side-by-side
-- Object detection and ArUco marker detection
-- Capture button to get measurements
-- Generate Dieline button to create the dieline
-"""
-
-import os
+import subprocess
 import sys
-import ctypes 
-import platform 
 import torch
+import tkinter as tk
+from pathlib import Path
+from tkinter import messagebox, ttk
 import cv2
 import numpy as np
-import subprocess
-from PyQt5 import QtCore, QtGui, QtWidgets
-from PyQt5.QtWidgets import QMessageBox
-from PyQt5.QtSvg import QSvgWidget
-from object_detector import ObjectDetector  
-from pathlib import Path
+
+from object_detector import ObjectDetector
 
 CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 480
@@ -31,375 +17,186 @@ NOT_ALLOWED_CLASS = 'Not allowed'
 CLEARANCE_MM = 10.0
 
 
-def cv2_to_qimage(frame: np.ndarray) -> QtGui.QImage:
-    """Convert OpenCV BGR frame to QImage."""
-    if frame is None:
-        return QtGui.QImage()
-    if frame.ndim == 2:
-        h, w = frame.shape
-        bytes_per_line = w
-        return QtGui.QImage(frame.data, w, h, bytes_per_line, QtGui.QImage.Format_Grayscale8).copy()
-    h, w, ch = frame.shape
-    bytes_per_line = ch * w
+def resource_path(filename: str) -> Path:
+    """Return the path to a bundled resource in source or PyInstaller mode."""
+    if getattr(sys, 'frozen', False):
+        bundle_dir = Path(getattr(sys, '_MEIPASS', Path(sys.executable).parent))
+    else:
+        bundle_dir = Path(__file__).resolve().parent
+    return bundle_dir / filename
+
+
+def cv2_to_photoimage(frame: np.ndarray) -> tk.PhotoImage:
+    """Convert an OpenCV BGR frame to a Tkinter PhotoImage."""
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    return QtGui.QImage(rgb.data, w, h, bytes_per_line, QtGui.QImage.Format_RGB888).copy()
+    height, width = rgb.shape[:2]
+    ppm_header = f'P6\n{width} {height}\n255\n'.encode('ascii')
+    return tk.PhotoImage(data=ppm_header + rgb.tobytes(), format='PPM')
 
 
-class DielinePreviewWindow(QtWidgets.QMainWindow):
-    def __init__(self, svg_path: str,
-                 measured_dimensions: tuple,
-                 adjusted_dimensions: tuple):
-        super().__init__()
-        self.svg_path = svg_path
-
-        measured_length, measured_width, measured_height = measured_dimensions
-        adj_length, adj_width, adj_height = adjusted_dimensions
-
-        self.setWindowTitle('Carton Dieline Preview')
-        self.setMinimumSize(1000, 640)
-        self.resize(1200, 720)
-        self.setStyleSheet('background-color: #f5f5f5;')
-
-        central = QtWidgets.QWidget()
-        self.setCentralWidget(central)
-        root = QtWidgets.QVBoxLayout(central)
-        root.setContentsMargins(16, 16, 16, 16)
-        root.setSpacing(12)
-
-        # ── Title bar ──────────────────────────────────────────────
-        title = QtWidgets.QLabel('Carton Dieline Preview')
-        title.setAlignment(QtCore.Qt.AlignCenter)
-        title.setStyleSheet(
-            'font-size: 20px; font-weight: bold; color: #1a1a2e;'
-            'padding: 6px 0; border-bottom: 2px solid #ddd;'
-        )
-        root.addWidget(title)
-
-        # ── Content row (left panel  +  preview area) ───────────────
-        content_row = QtWidgets.QHBoxLayout()
-        content_row.setSpacing(16)
-        root.addLayout(content_row, 1)
-
-        # LEFT – measurements card ──────────────────────────────────
-        left_card = QtWidgets.QFrame()
-        left_card.setFixedWidth(220)
-        left_card.setStyleSheet(
-            'QFrame { background: #ffffff; border: 1px solid #ddd;'
-            ' border-radius: 10px; }'
-        )
-        left_layout = QtWidgets.QVBoxLayout(left_card)
-        left_layout.setContentsMargins(18, 20, 18, 20)
-        left_layout.setSpacing(0)
-
-        card_title = QtWidgets.QLabel('Measurements')
-        card_title.setAlignment(QtCore.Qt.AlignCenter)
-        card_title.setStyleSheet(
-            'font-size: 13px; font-weight: bold; color: #555;'
-            'padding-bottom: 14px; border-bottom: 1px solid #eee;'
-        )
-        left_layout.addWidget(card_title)
-        left_layout.addSpacing(16)
-
-        def _dim_block(label: str, measured: float, adjusted: float) -> QtWidgets.QWidget:
-            block = QtWidgets.QWidget()
-            bl = QtWidgets.QVBoxLayout(block)
-            bl.setContentsMargins(0, 0, 0, 0)
-            bl.setSpacing(2)
-            lbl = QtWidgets.QLabel(label)
-            lbl.setStyleSheet('font-size: 11px; color: #888; font-weight: bold; text-transform: uppercase;')
-            val = QtWidgets.QLabel(f'{measured:.2f} mm')
-            val.setStyleSheet('font-size: 22px; font-weight: bold; color: #1a1a2e;')
-            adj_lbl = QtWidgets.QLabel(f'+ 60 mm  →  {adjusted:.2f} mm')
-            adj_lbl.setStyleSheet('font-size: 11px; color: #e07b00;')
-            bl.addWidget(lbl)
-            bl.addWidget(val)
-            bl.addWidget(adj_lbl)
-            return block
-
-        left_layout.addWidget(_dim_block('Length', measured_length, adj_length))
-        left_layout.addSpacing(18)
-        left_layout.addWidget(_dim_block('Width', measured_width, adj_width))
-        left_layout.addSpacing(18)
-        left_layout.addWidget(_dim_block('Height', measured_height, adj_height))
-        left_layout.addStretch()
-
-        note = QtWidgets.QLabel('10 mm clearance applied\nto each dimension')
-        note.setAlignment(QtCore.Qt.AlignCenter)
-        note.setWordWrap(True)
-        note.setStyleSheet(
-            'font-size: 10px; color: #aaa; padding-top: 10px;'
-            'border-top: 1px solid #eee;'
-        )
-        left_layout.addWidget(note)
-        content_row.addWidget(left_card)
-
-        # RIGHT – SVG preview ──────────────────────────────────────
-        preview_frame = QtWidgets.QFrame()
-        preview_frame.setStyleSheet(
-            'QFrame { background: #ffffff; border: 3px solid #e8a000;'
-            ' border-radius: 10px; }'
-        )
-        preview_layout = QtWidgets.QVBoxLayout(preview_frame)
-        preview_layout.setContentsMargins(6, 6, 6, 6)
-
-        self.svg_widget = QSvgWidget(svg_path)
-        self.svg_widget.setStyleSheet('background: transparent;')
-        preview_layout.addWidget(self.svg_widget)
-        content_row.addWidget(preview_frame, 1)
-
-        # ── Bottom bar ─────────────────────────────────────────────
-        bottom_bar = QtWidgets.QHBoxLayout()
-        bottom_bar.setSpacing(16)
-
-        self.path_label = QtWidgets.QLabel(f'Temp file: {svg_path}')
-        self.path_label.setStyleSheet('font-size: 10px; color: #aaa;')
-        self.path_label.setSizePolicy(
-            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred
-        )
-        bottom_bar.addWidget(self.path_label)
-
-        save_btn = QtWidgets.QPushButton('  Save as SVG  ')
-        save_btn.setFixedHeight(40)
-        save_btn.setStyleSheet('''
-            QPushButton {
-                background: #e8a000; color: #fff;
-                font-size: 14px; font-weight: bold;
-                border: none; border-radius: 8px;
-                padding: 0 24px;
-            }
-            QPushButton:hover  { background: #f5b300; }
-            QPushButton:pressed { background: #c98a00; }
-        ''')
-        save_btn.clicked.connect(self._save_to_desktop)
-        bottom_bar.addWidget(save_btn)
-
-        root.addLayout(bottom_bar)
-
-    # ─────────────────────────────────────────────────────────────
-    def _save_to_desktop(self):
-        """Save the generated SVG to the user's Desktop via file dialog (defaults to Desktop)."""
-        desktop = os.path.join(os.path.expanduser('~'), 'Desktop')
-        default_path = os.path.join(desktop, 'carton_dieline.svg')
-        dest, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self, 'Save Dieline as SVG', default_path,
-            'SVG Files (*.svg);;All Files (*)'
-        )
-        if not dest:
-            return
-        try:
-            import shutil
-            shutil.copy2(self.svg_path, dest)
-            self.path_label.setText(f'Saved: {dest}')
-            QMessageBox.information(self, 'Saved', f'Dieline saved to:\n{dest}')
-        except Exception as exc:
-            QMessageBox.critical(self, 'Save Error', str(exc))
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if os.path.exists(self.svg_path):
-            self.svg_widget.load(self.svg_path)
-
-
-class DualCameraApp(QtWidgets.QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle('Cartoon')
-        self.resize(1000, 600)
+class DualCameraApp:
+    def __init__(self, root: tk.Tk):
+        self.root = root
+        self.root.title('Cartoon')
+        self.root.geometry('1000x650')
+        self.root.minsize(860, 560)
+        self.root.configure(bg='#f4f6f8')
 
         self.cap1 = None
         self.cap2 = None
         self.detector1 = None
         self.detector2 = None
+        self.photo1 = None
+        self.photo2 = None
 
         self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50)
         self.aruco_params = cv2.aruco.DetectorParameters()
         self.aruco_detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
 
-        # Measurements stored in millimetres
         self.width = None
         self.height = None
         self.length = None
-        # pixels per millimetre for each camera
         self.pixels_per_mm_cam1 = None
         self.pixels_per_mm_cam2 = None
-        self.preview_window = None
         self.not_allowed_active = False
 
+        self._configure_styles()
         self._setup_ui()
-
-        self.timer = QtCore.QTimer()
-        self.timer.timeout.connect(self._update_frames)
-        self.timer.start(30)
-
         self._init_cameras()
         self._init_detectors()
+        self.root.protocol('WM_DELETE_WINDOW', self.close)
+        self._update_frames()
+
+    def _configure_styles(self):
+        style = ttk.Style(self.root)
+        style.theme_use('clam')
+        style.configure('App.TFrame', background='#f4f6f8')
+        style.configure('Title.TLabel', background='#f4f6f8', foreground='#18212f',
+                        font=('Segoe UI', 20, 'bold'))
+        style.configure('CameraTitle.TLabel', background='#ffffff', foreground='#263445',
+                        font=('Segoe UI', 13, 'bold'))
+        style.configure('Status.TLabel', background='#f4f6f8', foreground='#64748b',
+                        font=('Segoe UI', 10))
+        style.configure('Primary.TButton', font=('Segoe UI', 11, 'bold'), padding=(22, 12))
+        style.configure('Secondary.TButton', font=('Segoe UI', 11, 'bold'), padding=(22, 12))
 
     def _setup_ui(self):
-        """Setup the user interface."""
-        central = QtWidgets.QWidget()
-        self.setCentralWidget(central)
-        main_layout = QtWidgets.QVBoxLayout(central)
+        outer = ttk.Frame(self.root, style='App.TFrame', padding=18)
+        outer.pack(fill=tk.BOTH, expand=True)
 
-        camera_layout = QtWidgets.QHBoxLayout()
+        ttk.Label(outer, text='Carton Measurement', style='Title.TLabel').pack(pady=(0, 4))
+        ttk.Label(outer, text='Position the ArUco markers and carton in both camera views',
+                  style='Status.TLabel').pack(pady=(0, 14))
 
-        cam1_container = QtWidgets.QVBoxLayout()
-        cam1_label = QtWidgets.QLabel('Camera 1 - Length')
-        cam1_label.setAlignment(QtCore.Qt.AlignCenter)
-        cam1_label.setStyleSheet('font-size: 14px; font-weight: bold; padding: 5px;')
-        cam1_container.addWidget(cam1_label)
+        camera_row = ttk.Frame(outer, style='App.TFrame')
+        camera_row.pack(fill=tk.BOTH, expand=True)
+        camera_row.columnconfigure(0, weight=1)
+        camera_row.columnconfigure(1, weight=1)
+        camera_row.rowconfigure(0, weight=1)
 
-        self.camera1_view = QtWidgets.QLabel()
-        self.camera1_view.setFixedSize(450, 350)
-        self.camera1_view.setStyleSheet('background: #2a2a2a; border: 3px solid #00ff00;')
-        self.camera1_view.setAlignment(QtCore.Qt.AlignCenter)
-        self.camera1_view.setText('Camera 1')
-        cam1_container.addWidget(self.camera1_view)
-        camera_layout.addLayout(cam1_container)
+        self.camera1_view = self._create_camera_panel(camera_row, 'Camera 1', 'Length', 0)
+        self.camera2_view = self._create_camera_panel(camera_row, 'Camera 2', 'Width & Height', 1)
 
-        cam2_container = QtWidgets.QVBoxLayout()
-        cam2_label = QtWidgets.QLabel('Camera 2 - Width & Height')
-        cam2_label.setAlignment(QtCore.Qt.AlignCenter)
-        cam2_label.setStyleSheet('font-size: 14px; font-weight: bold; padding: 5px;')
-        cam2_container.addWidget(cam2_label)
+        controls = ttk.Frame(outer, style='App.TFrame')
+        controls.pack(pady=(18, 10))
 
-        self.camera2_view = QtWidgets.QLabel()
-        self.camera2_view.setFixedSize(450, 350)
-        self.camera2_view.setStyleSheet('background: #2a2a2a; border: 3px solid #00ff00;')
-        self.camera2_view.setAlignment(QtCore.Qt.AlignCenter)
-        self.camera2_view.setText('Camera 2')
-        cam2_container.addWidget(self.camera2_view)
-        camera_layout.addLayout(cam2_container)
+        self.capture_btn = ttk.Button(
+            controls, text='Capture Measurements', style='Primary.TButton',
+            command=self.capture_measurements
+        )
+        self.capture_btn.grid(row=0, column=0, padx=8)
 
-        main_layout.addLayout(camera_layout)
+        self.generate_btn = ttk.Button(
+            controls, text='Generate Dieline', style='Secondary.TButton',
+            command=self.generate_dieline, state=tk.DISABLED
+        )
+        self.generate_btn.grid(row=0, column=1, padx=8)
 
-        button_layout = QtWidgets.QHBoxLayout()
-        button_layout.addStretch()
+        self.measurements_label = ttk.Label(
+            outer, text='Measurements: not captured', style='Status.TLabel'
+        )
+        self.measurements_label.pack(pady=(0, 4))
 
-        self.capture_btn = QtWidgets.QPushButton('CAPTURE')
-        self.capture_btn.setFixedSize(200, 50)
-        self.capture_btn.setStyleSheet('''
-            QPushButton {
-                background: #4080ff;
-                color: white;
-                font-size: 16px;
-                font-weight: bold;
-                border: 2px solid #2060dd;
-                border-radius: 10px;
-            }
-            QPushButton:hover {
-                background: #5090ff;
-            }
-            QPushButton:pressed {
-                background: #3070ee;
-            }
-        ''')
-        self.capture_btn.clicked.connect(self.capture_measurements)
-        button_layout.addWidget(self.capture_btn)
+        self.status_label = ttk.Label(
+            outer, text='Ready - place ArUco markers in both camera views, then capture',
+            style='Status.TLabel'
+        )
+        self.status_label.pack(pady=(0, 2))
 
-        button_layout.addSpacing(30)
+    def _create_camera_panel(self, parent, camera_name, measurement_name, column):
+        panel = tk.Frame(parent, bg='#ffffff', highlightthickness=1,
+                         highlightbackground='#d7dee7')
+        panel.grid(row=0, column=column, sticky='nsew', padx=7)
+        panel.rowconfigure(1, weight=1)
+        panel.columnconfigure(0, weight=1)
 
-        self.generate_btn = QtWidgets.QPushButton('GENERATE DIELINE')
-        self.generate_btn.setFixedSize(200, 50)
-        self.generate_btn.setStyleSheet('''
-            QPushButton {
-                background: #4080ff;
-                color: white;
-                font-size: 16px;
-                font-weight: bold;
-                border: 2px solid #2060dd;
-                border-radius: 10px;
-            }
-            QPushButton:hover {
-                background: #5090ff;
-            }
-            QPushButton:pressed {
-                background: #3070ee;
-            }
-            QPushButton:disabled {
-                background: #666;
-                border: 2px solid #555;
-                color: #999;
-            }
-        ''')
-        self.generate_btn.clicked.connect(self.generate_dieline)
-        self.generate_btn.setEnabled(False)
-        button_layout.addWidget(self.generate_btn)
+        ttk.Label(panel, text=f'{camera_name} - {measurement_name}',
+                  style='CameraTitle.TLabel', anchor=tk.CENTER).grid(
+                      row=0, column=0, sticky='ew', pady=(10, 8)
+                  )
 
-        button_layout.addStretch()
-
-        main_layout.addSpacing(20)
-        main_layout.addLayout(button_layout)
-        main_layout.addSpacing(20)
-
-        self.status_label = QtWidgets.QLabel('Ready - Place ArUco markers in both camera views, then click CAPTURE')
-        self.status_label.setAlignment(QtCore.Qt.AlignCenter)
-        self.status_label.setStyleSheet('font-size: 12px; color: #888; padding: 10px;')
-        main_layout.addWidget(self.status_label)
+        view = tk.Label(panel, text=f'{camera_name}\nWaiting for camera...',
+                        bg='#202936', fg='#d7dee7', font=('Segoe UI', 12), relief=tk.FLAT)
+        view.grid(row=1, column=0, sticky='nsew', padx=10, pady=(0, 10))
+        return view
 
     def _init_cameras(self):
-        """Initialize both cameras."""
-        try:
-            self.cap1 = cv2.VideoCapture(0)
-            self.cap1.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
-            self.cap1.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
-            print('Camera 1 initialized')
-        except Exception as e:
-            print(f'Error opening Camera 1: {e}')
+        self.cap1 = self._open_camera(0)
+        self.cap2 = self._open_camera(1)
 
-        try:
-            self.cap2 = cv2.VideoCapture(1)
-            self.cap2.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
-            self.cap2.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
-            print('Camera 2 initialized')
-        except Exception as e:
-            print(f'Error opening Camera 2: {e}')
+    @staticmethod
+    def _open_camera(index):
+        camera = cv2.VideoCapture(index)
+        camera.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+        camera.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+        return camera
 
     def _init_detectors(self):
-        """Initialize object detectors for both cameras."""
-        try:
-            self.detector1 = ObjectDetector(model_path='camera1_segmodel.pt', conf_threshold=DETECTION_CONFIDENCE)
-            if self.detector1.load_model():
-                print('Camera 1 object detector loaded')
-            else:
-                self.detector1 = None
-        except Exception as e:
-            print(f'Error loading Camera 1 detector: {e}')
-            self.detector1 = None
+        self.detector1 = self._load_detector(resource_path('camera1_segmodel.pt'))
+        self.detector2 = self._load_detector(resource_path('camera2_segmodel.pt'))
 
+    @staticmethod
+    def _load_detector(model_path):
         try:
-            self.detector2 = ObjectDetector(model_path='camera2_segmodel.pt', conf_threshold=DETECTION_CONFIDENCE)
-            if self.detector2.load_model():
-                print('Camera 2 object detector loaded')
-            else:
-                self.detector2 = None
-        except Exception as e:
-            print(f'Error loading Camera 2 detector: {e}')
-            self.detector2 = None
+            model_path = Path(model_path)
+            if not model_path.is_file():
+                print(f'Error: Model file not found at {model_path}')
+                return None
+
+            detector = ObjectDetector(
+                model_path=str(model_path),
+                conf_threshold=DETECTION_CONFIDENCE
+            )
+            return detector if detector.load_model() else None
+        except Exception as exc:
+            print(f'Error loading {model_path}: {exc}')
+            return None
 
     def _update_frames(self):
-        """Update both camera feeds with object detection and ArUco markers."""
         not_allowed_this_frame = self._process_camera_frame(
-            self.cap1, self.detector1, self.camera1_view, 'pixels_per_mm_cam1'
+            self.cap1, self.detector1, self.camera1_view, 'pixels_per_mm_cam1', 1
         )
         not_allowed_this_frame |= self._process_camera_frame(
-            self.cap2, self.detector2, self.camera2_view, 'pixels_per_mm_cam2'
+            self.cap2, self.detector2, self.camera2_view, 'pixels_per_mm_cam2', 2
         )
         self._update_safety_state(not_allowed_this_frame)
+        self.root.after(30, self._update_frames)
 
-    def _process_camera_frame(self, camera, detector, view, calibration_attribute):
+    def _process_camera_frame(self, camera, detector, view, calibration_attribute, camera_number):
         if camera is None or not camera.isOpened():
+            view.configure(text=f'Camera {camera_number}\nUnavailable', image='')
             return False
 
         received, frame = camera.read()
         if not received:
+            view.configure(text=f'Camera {camera_number}\nNo frame received', image='')
             return False
 
         not_allowed_detected = False
         if detector is not None:
             frame, detections = detector.detect(frame, draw_boxes=True)
             not_allowed_detected = any(
-                detection['class_name'] == NOT_ALLOWED_CLASS
-                for detection in detections
+                detection['class_name'] == NOT_ALLOWED_CLASS for detection in detections
             )
 
         corners, ids, _ = self.aruco_detector.detectMarkers(frame)
@@ -409,174 +206,119 @@ class DualCameraApp(QtWidgets.QMainWindow):
             top_width = np.linalg.norm(marker_corners[0] - marker_corners[1])
             bottom_width = np.linalg.norm(marker_corners[3] - marker_corners[2])
             marker_width_pixels = (top_width + bottom_width) / 2
-            setattr(
-                self,
-                calibration_attribute,
-                marker_width_pixels / ARUCO_MARKER_SIZE_MM,
-            )
+            setattr(self, calibration_attribute, marker_width_pixels / ARUCO_MARKER_SIZE_MM)
 
-        self._display_frame(frame, view)
+        photo = cv2_to_photoimage(frame)
+        view.configure(image=photo, text='')
+        if camera_number == 1:
+            self.photo1 = photo
+        else:
+            self.photo2 = photo
         return not_allowed_detected
 
-    @staticmethod
-    def _display_frame(frame, view):
-        qimg = cv2_to_qimage(frame)
-        pixmap = QtGui.QPixmap.fromImage(qimg).scaled(
-            view.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation
-        )
-        view.setPixmap(pixmap)
-
     def _update_safety_state(self, not_allowed_this_frame):
-        """Update controls and status text after processing both cameras."""
         if not_allowed_this_frame != self.not_allowed_active:
             self.not_allowed_active = not_allowed_this_frame
             if not_allowed_this_frame:
-                self.capture_btn.setEnabled(False)
-                self.generate_btn.setEnabled(False)
-                self.status_label.setText('WARNING: "Not allowed" object detected — capture disabled')
-                self.status_label.setStyleSheet('font-size: 12px; color: #ff4444; font-weight: bold; padding: 10px;')
-            else:
-                self.capture_btn.setEnabled(True)
-                self.generate_btn.setEnabled(
-                    self.width is not None and self.height is not None and self.length is not None
+                self.capture_btn.configure(state=tk.DISABLED)
+                self.generate_btn.configure(state=tk.DISABLED)
+                self.status_label.configure(
+                    text='WARNING: "Not allowed" object detected - capture disabled',
+                    foreground='#c62828'
                 )
-                self.status_label.setText('Ready - Place ArUco markers in both camera views, then click CAPTURE')
-                self.status_label.setStyleSheet('font-size: 12px; color: #888; padding: 10px;')
+            else:
+                self.capture_btn.configure(state=tk.NORMAL)
+                self.generate_btn.configure(
+                    state=tk.NORMAL if self._has_measurements() else tk.DISABLED
+                )
+                self.status_label.configure(
+                    text='Ready - place ArUco markers in both camera views, then capture',
+                    foreground='#64748b'
+                )
+
+    def _has_measurements(self):
+        return all(value is not None for value in (self.width, self.height, self.length))
 
     def capture_measurements(self):
-        """Capture measurements from both cameras."""
         if self.cap1 is None or not self.cap1.isOpened():
-            QMessageBox.warning(self, 'Error', 'Camera 1 is not available')
+            messagebox.showwarning('Camera unavailable', 'Camera 1 is not available', parent=self.root)
             return
-
         if self.cap2 is None or not self.cap2.isOpened():
-            QMessageBox.warning(self, 'Error', 'Camera 2 is not available')
+            messagebox.showwarning('Camera unavailable', 'Camera 2 is not available', parent=self.root)
             return
 
         ret1, frame1 = self.cap1.read()
-        if not ret1:
-            QMessageBox.warning(self, 'Error', 'Failed to capture from Camera 1')
-            return
-
         ret2, frame2 = self.cap2.read()
-        if not ret2:
-            QMessageBox.warning(self, 'Error', 'Failed to capture from Camera 2')
+        if not ret1 or not ret2:
+            messagebox.showwarning('Capture failed', 'Could not capture frames from both cameras.', parent=self.root)
             return
-
         if self.pixels_per_mm_cam1 is None:
-            QMessageBox.warning(self, 'Error', 'Camera 1 not calibrated. Please place ArUco marker in Camera 1 view.')
+            messagebox.showwarning('Camera 1 not calibrated', 'Place an ArUco marker in Camera 1 view.', parent=self.root)
             return
-
         if self.pixels_per_mm_cam2 is None:
-            QMessageBox.warning(self, 'Error', 'Camera 2 not calibrated. Please place ArUco marker in Camera 2 view.')
+            messagebox.showwarning('Camera 2 not calibrated', 'Place an ArUco marker in Camera 2 view.', parent=self.root)
+            return
+        if self.detector1 is None or self.detector2 is None:
+            messagebox.showwarning('Detector unavailable', 'One or more object detectors could not be loaded.', parent=self.root)
             return
 
-        if self.detector1 is not None:
-            _, detections1 = self.detector1.detect(frame1, draw_boxes=False)
-            if len(detections1) > 0:
-                bbox = detections1[0]['bbox']
-                x1, y1, x2, y2 = map(int, bbox)
-                length_pixels = x2 - x1
-                # produce measurements in millimetres
-                self.length = length_pixels / self.pixels_per_mm_cam1
-            else:
-                QMessageBox.warning(self, 'Error', 'No object detected in Camera 1')
-                return
-        else:
-            QMessageBox.warning(self, 'Error', 'Object detector for Camera 1 not loaded')
+        _, detections1 = self.detector1.detect(frame1, draw_boxes=False)
+        _, detections2 = self.detector2.detect(frame2, draw_boxes=False)
+        if not detections1:
+            messagebox.showwarning('Object not detected', 'No object detected in Camera 1.', parent=self.root)
+            return
+        if not detections2:
+            messagebox.showwarning('Object not detected', 'No object detected in Camera 2.', parent=self.root)
             return
 
-        if self.detector2 is not None:
-            _, detections2 = self.detector2.detect(frame2, draw_boxes=False)
-            if len(detections2) > 0:
-                bbox = detections2[0]['bbox']
-                x1, y1, x2, y2 = map(int, bbox)
-                width_pixels = x2 - x1
-                height_pixels = y2 - y1
-                # produce measurement in millimetres
-                self.width = width_pixels / self.pixels_per_mm_cam2
-                self.height = height_pixels / self.pixels_per_mm_cam2
-            else:
-                QMessageBox.warning(self, 'Error', 'No object detected in Camera 2')
-                return
-        else:
-            QMessageBox.warning(self, 'Error', 'Object detector for Camera 2 not loaded')
-            return
+        x1, _, x2, _ = map(int, detections1[0]['bbox'])
+        self.length = (x2 - x1) / self.pixels_per_mm_cam1
+        x1, y1, x2, y2 = map(int, detections2[0]['bbox'])
+        self.width = (x2 - x1) / self.pixels_per_mm_cam2
+        self.height = (y2 - y1) / self.pixels_per_mm_cam2
 
-        self.status_label.setText(
-            f'Captured: Length={self.length:.2f} mm, Width={self.width:.2f} mm, Height={self.height:.2f} mm'
+        self.measurements_label.configure(
+            text=f'Length: {self.length:.2f} mm    Width: {self.width:.2f} mm    Height: {self.height:.2f} mm',
+            foreground='#176b3a'
         )
-        self.status_label.setStyleSheet('font-size: 12px; color: #00ff00; padding: 10px;')
-        self.generate_btn.setEnabled(True)
-
-        QMessageBox.information(
-            self,
-            'Measurements Captured',
-            f'Length: {self.length:.2f} mm\nWidth: {self.width:.2f} mm\nHeight: {self.height:.2f} mm'
-        )
+        self.status_label.configure(text='Measurements captured successfully', foreground='#176b3a')
+        self.generate_btn.configure(state=tk.NORMAL)
 
     def generate_dieline(self):
-        """Generate dieline from captured measurements by launching gen_cartondieline.py.
-
-        Measurements in this PyQt app are in millimetres and will be passed
-        directly to the external dieline generator.
-        """
-        if self.width is None or self.height is None or self.length is None:
-            QMessageBox.warning(self, 'Error', 'Please capture measurements first')
+        if not self._has_measurements():
+            messagebox.showwarning('Missing measurements', 'Please capture measurements first.', parent=self.root)
             return
 
         try:
-            # Measurements are already in mm; add 10 mm clearance to each
-            length_mm = float(self.length) + CLEARANCE_MM
-            width_mm = float(self.width) + CLEARANCE_MM
-            height_mm = float(self.height) + CLEARANCE_MM
-
+            dimensions = {
+                'length': float(self.length) + CLEARANCE_MM,
+                'width': float(self.width) + CLEARANCE_MM,
+                'height': float(self.height) + CLEARANCE_MM,
+            }
             if getattr(sys, 'frozen', False):
-                # CartonIQ.exe is inside dist/CartonIQ/
-                generator_path = (
-                    Path(sys.executable).resolve().parent.parent
-                    / 'CartonDieline'
-                    / 'CartonDieline.exe'
-                )
+                generator_path = Path(sys.executable).resolve().parent.parent / 'CartonDieline' / 'CartonDieline.exe'
+                args = [str(generator_path)]
             else:
-                # Development mode
                 generator_path = Path(__file__).resolve().parent / 'gen_cartondieline.py'
-
-            if getattr(sys, 'frozen', False):
-                args = [
-                    str(generator_path),
-                    '--length', str(length_mm),
-                    '--width', str(width_mm),
-                    '--height', str(height_mm),
-                ]
-            else:
-                args = [
-                    sys.executable,
-                    str(generator_path),
-                    '--length', str(length_mm),
-                    '--width', str(width_mm),
-                    '--height', str(height_mm),
-                ]
-
+                args = [sys.executable, str(generator_path)]
+            for name, value in dimensions.items():
+                args.extend([f'--{name}', str(value)])
             subprocess.Popen(args)
+        except Exception as exc:
+            messagebox.showerror('Generation failed', f'Failed to generate dieline:\n{exc}', parent=self.root)
 
-        except Exception as e:
-            QMessageBox.critical(self, 'Error', f'Failed to generate dieline:\n{str(e)}')
-
-    def closeEvent(self, event):
-        """Clean up when closing the application."""
+    def close(self):
         if self.cap1 is not None:
             self.cap1.release()
         if self.cap2 is not None:
             self.cap2.release()
-        event.accept()
+        self.root.destroy()
 
 
 def main():
-    app = QtWidgets.QApplication(sys.argv)
-    window = DualCameraApp()
-    window.show()
-    sys.exit(app.exec_())
+    root = tk.Tk()
+    DualCameraApp(root)
+    root.mainloop()
 
 
 if __name__ == '__main__':

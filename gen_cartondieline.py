@@ -5,7 +5,7 @@ import svgwrite
 class DielineGeneratorApp:
     def __init__(self, root, initial_length=None, initial_width=None, initial_height=None):
         self.root = root
-        self.root.title("Dynamic Carton Dieline Generator (FEFCO 0201)")
+        self.root.title("Carton Dieline Pattern Generator")
         self.root.geometry("1100x700")
         self.root.configure(bg="#f4f5f7")
         

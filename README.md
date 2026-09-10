@@ -8,12 +8,12 @@ CartonIQ is a real-time computer vision system that automatically measures the d
 - **YOLOv11 Segmentation** — Custom-trained YOLO segmentation models (`camera1_segmodel.pt`, `camera2_segmodel.pt`) detect and segment the carton from the background in real time.
 - **ArUco Marker Scale Reference** — ArUco markers (DICT_5X5_50) placed in the scene provide a known physical scale, enabling pixel-to-cm conversion for accurate measurements.
 - **Automatic Dieline Generation** — Measured dimensions are used to auto-generate a flat RSC carton dieline with proper clearance, ready for die-cutting and folding.
-- **PyQt5 GUI** — A clean side-by-side dual-camera interface with Capture and Generate Dieline controls. Dieline generation opens the Tkinter-based generator with the captured dimensions prefilled.
+- **Tkinter GUI** — A clean side-by-side dual-camera interface with Capture and Generate Dieline controls. Dieline generation opens the Tkinter-based generator with the captured dimensions prefilled.
 
 
 ## Tech Stack
 
-- Python, PyQt5
+- Python, Tkinter
 - OpenCV (camera capture, ArUco detection)
 - Ultralytics YOLOv11 (object segmentation)
 - PyTorch

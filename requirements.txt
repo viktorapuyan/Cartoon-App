@@ -1,7 +1,4 @@
 numpy
 opencv-contrib-python
-torch
-torchvision
-PyQt5
 ultralytics
 svgwrite
