@@ -2,6 +2,10 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import svgwrite
 
+
+ALLOWANCE_MM = 10.0
+
+
 class DielineGeneratorApp:
     def __init__(self, root, initial_length=None, initial_width=None, initial_height=None):
         self.root = root
@@ -34,22 +38,53 @@ class DielineGeneratorApp:
         self.setup_ui()
         self.update_preview()
 
+    @staticmethod
+    def _format_dimension_value(value):
+        try:
+            return f"{float(value):.2f}"
+        except (TypeError, ValueError):
+            return str(value)
+
     def setup_ui(self):
         # --- Left Panel: Inputs ---
         ttk.Label(self.left_panel, text="Custom Size (mm)", style='Header.TLabel').pack(anchor=tk.W, pady=(0, 20))
 
         # Variables set to match the user's reference image (overridable)
-        self.var_length = tk.StringVar(value=str(self.initial_length) if self.initial_length is not None else "238")
-        self.var_width = tk.StringVar(value=str(self.initial_width) if self.initial_width is not None else "180")
-        self.var_height = tk.StringVar(value=str(self.initial_height) if self.initial_height is not None else "80")
+        self.var_length = tk.StringVar(value=self._format_dimension_value(self.initial_length) if self.initial_length is not None else "238.00")
+        self.var_width = tk.StringVar(value=self._format_dimension_value(self.initial_width) if self.initial_width is not None else "180.00")
+        self.var_height = tk.StringVar(value=self._format_dimension_value(self.initial_height) if self.initial_height is not None else "80.00")
         # Trace variables for real-time dynamic updates
-        self.var_length.trace_add("write", lambda *args: self.update_preview())
-        self.var_width.trace_add("write", lambda *args: self.update_preview())
-        self.var_height.trace_add("write", lambda *args: self.update_preview())
+        self._updating_dimensions = False
+        self.base_dimensions = None
+        self.var_length.trace_add("write", lambda *args: self._dimensions_changed())
+        self.var_width.trace_add("write", lambda *args: self._dimensions_changed())
+        self.var_height.trace_add("write", lambda *args: self._dimensions_changed())
 
         self.create_input_row("Length (L):", self.var_length)
         self.create_input_row("Width (W):", self.var_width)
         self.create_input_row("Height (H):", self.var_height)
+
+        self.allowance_mode = tk.StringVar(value="with")
+        self._previous_allowance_mode = "with"
+        self.allowance_mode.trace_add("write", lambda *args: self._allowance_changed())
+        allowance_frame = ttk.Frame(self.left_panel)
+        allowance_frame.pack(fill=tk.X, pady=(12, 0))
+        ttk.Label(allowance_frame, text="Allowance:").pack(anchor=tk.W)
+        ttk.Radiobutton(
+            allowance_frame,
+            text="before 10mm",
+            variable=self.allowance_mode,
+            value="before",
+        ).pack(anchor=tk.W, pady=(4, 0))
+        ttk.Radiobutton(
+            allowance_frame,
+            text="with 10mm",
+            variable=self.allowance_mode,
+            value="with",
+        ).pack(anchor=tk.W)
+
+        self.base_dimensions = self.get_dimensions()
+        self._set_display_dimensions(self.base_dimensions, with_allowance=True)
         
 
         # Save Button
@@ -85,8 +120,56 @@ class DielineGeneratorApp:
         self.current_scale = None
         self.update_preview()
 
-    def generate_paths(self, L, W, H):
+    def _set_display_dimensions(self, dimensions, with_allowance):
+        if dimensions is None:
+            return
+        amount = ALLOWANCE_MM if with_allowance else 0
+        self._updating_dimensions = True
+        try:
+            self.var_length.set(self._format_dimension_value(dimensions[0] + amount))
+            self.var_width.set(self._format_dimension_value(dimensions[1] + amount))
+            self.var_height.set(self._format_dimension_value(dimensions[2] + amount))
+        finally:
+            self._updating_dimensions = False
+
+    def _dimensions_changed(self):
+        if self._updating_dimensions:
+            return
+        dimensions = self.get_dimensions()
+        if dimensions is not None:
+            amount = ALLOWANCE_MM if self.allowance_mode.get() == "with" else 0
+            self.base_dimensions = tuple(value - amount for value in dimensions)
+            self._updating_dimensions = True
+            try:
+                self.var_length.set(self._format_dimension_value(dimensions[0]))
+                self.var_width.set(self._format_dimension_value(dimensions[1]))
+                self.var_height.set(self._format_dimension_value(dimensions[2]))
+            finally:
+                self._updating_dimensions = False
+        self.update_preview()
+
+    def _allowance_changed(self):
+        dimensions = self.get_dimensions()
+        if dimensions is not None:
+            previous_amount = ALLOWANCE_MM if self._previous_allowance_mode == "with" else 0
+            self.base_dimensions = tuple(value - previous_amount for value in dimensions)
+            self._set_display_dimensions(
+                self.base_dimensions,
+                with_allowance=self.allowance_mode.get() == "with",
+            )
+        self._previous_allowance_mode = self.allowance_mode.get()
+        self.current_scale = None
+        self.update_preview()
+
+    def generate_paths(self, L, W, H, with_allowance=None):
         """Generates the exact mathematical line segments for cuts and creases"""
+        if with_allowance is None:
+            with_allowance = self.allowance_mode.get() == "with"
+        if with_allowance:
+            L += ALLOWANCE_MM
+            W += ALLOWANCE_MM
+            H += ALLOWANCE_MM
+
         S = 3  # Slot width (gap between flaps) in mm
         taper = 5  # Glue flap taper in mm
         # No user-configurable glue flap width — use zero inset
@@ -158,7 +241,7 @@ class DielineGeneratorApp:
         c_height = self.canvas.winfo_height()
         if c_width <= 1 or c_height <= 1: return
 
-        cuts, creases, total_width, total_height = self.generate_paths(L, W, H)
+        cuts, creases, total_width, total_height = self.generate_paths(L, W, H, with_allowance=False)
 
         # --- Dynamic Scaling Logic ---
         padding = 40
@@ -209,7 +292,7 @@ class DielineGeneratorApp:
         )
         if not file_path: return
 
-        cuts, creases, total_w, total_h = self.generate_paths(L, W, H)
+        cuts, creases, total_w, total_h = self.generate_paths(L, W, H, with_allowance=False)
         
         dwg = svgwrite.Drawing(file_path, size=(f"{total_w}mm", f"{total_h}mm"), viewBox=f"0 0 {total_w} {total_h}")
 

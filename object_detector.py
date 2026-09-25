@@ -126,12 +126,12 @@ class ObjectDetector:
             # Extract coordinates
             x1, y1, x2, y2 = map(int, bbox)
             
-            # Red for "Not allowed", palette color for everything else
-            if class_name == "Not allowed":
+            # Red for safety-blocking classes, palette color for everything else
+            if class_name in {"Not allowed", "Undersize"}:
                 color = (0, 0, 255)  # BGR red
             else:
                 color = self._get_color_for_class(det['class_id'])
-            
+
             # Draw bounding box
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
             
