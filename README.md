@@ -25,3 +25,19 @@ CartonIQ is a real-time computer vision system that automatically measures the d
 1. Place an object in view of both cameras with an ArUco reference marker visible.
 2. Click **Capture** in the GUI to run detection and extract measurements.
 3. Click **Generate Dieline** to produce and preview the SVG flat-pattern dieline based on the measured dimensions.
+
+## Export for Windows
+
+Install the dependencies, including PyInstaller, in the Python environment used to run the project:
+
+```powershell
+pip install -r requirements.txt
+```
+
+Build an export folder containing the source files, `Cartoon.exe`, and the dieline helper executable:
+
+```powershell
+python export_project.py Cartoon-Export
+```
+
+Run `Cartoon-Export\Cartoon.exe` on a Windows machine with the two cameras connected. The `.pt` model files are bundled into the main executable.
