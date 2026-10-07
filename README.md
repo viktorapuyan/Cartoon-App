@@ -5,8 +5,6 @@ CartonIQ is a real-time computer vision system that automatically measures the d
 ## Features
 
 - **Dual-Camera Detection** — Two camera feeds processed simultaneously; Camera 1 captures the top-down view and Camera 2 captures the side profile.
-- **YOLOv11 Segmentation** — Custom-trained YOLO segmentation models (`camera1_segmodel.pt`, `camera2_segmodel.pt`) detect and segment the carton from the background in real time.
-- **ArUco Marker Scale Reference** — ArUco markers (DICT_5X5_50) placed in the scene provide a known physical scale, enabling pixel-to-cm conversion for accurate measurements.
 - **Automatic Dieline Generation** — Measured dimensions are used to auto-generate a flat RSC carton dieline with proper clearance, ready for die-cutting and folding.
 - **Tkinter GUI** — A clean side-by-side dual-camera interface with Capture and Generate Dieline controls. Dieline generation opens the Tkinter-based generator with the captured dimensions prefilled.
 
@@ -17,27 +15,10 @@ CartonIQ is a real-time computer vision system that automatically measures the d
 - OpenCV (camera capture, ArUco detection)
 - Ultralytics YOLOv11 (object segmentation)
 - PyTorch
-- Matplotlib (dieline rendering)
 - SVGWrite (SVG export)
 
 ## How It Works
 
 1. Place an object in view of both cameras with an ArUco reference marker visible.
-2. Click **Capture** in the GUI to run detection and extract measurements.
+2. Click **Capture Measurements** in the GUI to run detection and extract measurements.
 3. Click **Generate Dieline** to produce and preview the SVG flat-pattern dieline based on the measured dimensions.
-
-## Export for Windows
-
-Install the dependencies, including PyInstaller, in the Python environment used to run the project:
-
-```powershell
-pip install -r requirements.txt
-```
-
-Build an export folder containing the source files, `Cartoon.exe`, and the dieline helper executable:
-
-```powershell
-python export_project.py Cartoon-Export
-```
-
-Run `Cartoon-Export\Cartoon.exe` on a Windows machine with the two cameras connected. The `.pt` model files are bundled into the main executable.
