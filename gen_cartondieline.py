@@ -226,8 +226,8 @@ class DielineGeneratorApp:
             (x1, y2, x2 - S/2, y2), (x2 + S/2, y2, x3 - S/2, y2), (x3 + S/2, y2, x4 - S/2, y2), (x4 + S/2, y2, x5, y2)  
         ])
         
-        # Vertical creases
-        creases.extend([(x1, y1, x1, y2), (x2, y1, x2, y2), (x3, y1, x3, y2), (x4, y1, x4, y2)])
+        # Vertical creases; x1 is the outer glue-flap cut, not an interior fold.
+        creases.extend([(x2, y1, x2, y2), (x3, y1, x3, y2), (x4, y1, x4, y2)])
 
         return cuts, creases, x5, y3 
 
@@ -245,8 +245,9 @@ class DielineGeneratorApp:
 
         # --- Dynamic Scaling Logic ---
         padding = 40
-        available_w = c_width - padding * 2
-        available_h = c_height - padding * 2
+        label_space = 64  # Preview-only dimension labels below the layout.
+        available_w = max(1, c_width - padding * 2)
+        available_h = max(1, c_height - padding * 2 - label_space)
         fit_scale = min(available_w / total_width, available_h / total_height)
 
         if self.current_scale is None or window_resize:
@@ -259,7 +260,7 @@ class DielineGeneratorApp:
 
         scale = self.current_scale
         offset_x = (c_width - (total_width * scale)) / 2
-        offset_y = (c_height - (total_height * scale)) / 2
+        offset_y = (c_height - label_space - (total_height * scale)) / 2
 
         def render_line(x1, y1, x2, y2, is_cut):
             sx1, sy1 = offset_x + (x1 * scale), offset_y + (y1 * scale)
@@ -277,6 +278,51 @@ class DielineGeneratorApp:
             render_line(x1, y1, x2, y2, is_cut=True)
         for x1, y1, x2, y2 in creases:
             render_line(x1, y1, x2, y2, is_cut=False)
+
+        self._draw_preview_dimensions(L, W, H, scale, offset_x, offset_y)
+
+    def _draw_preview_dimensions(self, L, W, H, scale, offset_x, offset_y):
+        """Draw dimension arrows on the canvas only; SVG exports use paths only."""
+        top = offset_y + (W / 2) * scale
+        bottom = top + H * scale
+        layout_bottom = offset_y + (W + H) * scale
+        label_y = layout_bottom + 36
+        inset = min(12, H * scale / 4)
+        color = "#1f2937"
+        arrow_style = dict(
+            fill=color, width=2, arrow=tk.BOTH,
+            arrowshape=(8, 10, 4), tags="dimensions",
+        )
+
+        # Length across the first body panel, width across the second.
+        for start, end, arrow_y, name, value in (
+            (0, L, top + inset, "L", L),
+            (L, L + W, bottom - inset, "W", W),
+        ):
+            left = offset_x + start * scale
+            right = offset_x + end * scale
+            center = (left + right) / 2
+            self.canvas.create_line(left, arrow_y, right, arrow_y, **arrow_style)
+            self.canvas.create_line(
+                center, arrow_y + 6, center, label_y - 14,
+                fill=color, dash=(5, 5), tags="dimensions",
+            )
+            self.canvas.create_text(
+                center, label_y, text=f"{name}: {value:.2f} mm",
+                fill=color, font=("Segoe UI", 11, "bold"), tags="dimensions",
+            )
+
+        # Height between the body folds in the last panel.
+        center = offset_x + (2 * L + 1.5 * W) * scale
+        self.canvas.create_line(center, top, center, bottom, **arrow_style)
+        self.canvas.create_line(
+            center, bottom + 6, center, label_y - 14,
+            fill=color, dash=(5, 5), tags="dimensions",
+        )
+        self.canvas.create_text(
+            center, label_y, text=f"H: {H:.2f} mm",
+            fill=color, font=("Segoe UI", 11, "bold"), tags="dimensions",
+        )
 
     def save_svg(self):
         dims = self.get_dimensions()
