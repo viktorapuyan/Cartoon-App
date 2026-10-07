@@ -11,9 +11,9 @@ CartonIQ is a real-time computer vision system that automatically measures the d
 
 ## Tech Stack
 
-- Python, Tkinter
-- OpenCV (camera capture, ArUco detection)
-- Ultralytics YOLOv11 (object segmentation)
+- Python
+- Tkinter (GUI)
+- OpenCV (camera capture)
 - PyTorch
 - SVGWrite (SVG export)
 
