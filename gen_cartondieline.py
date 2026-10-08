@@ -290,8 +290,8 @@ class DielineGeneratorApp:
         inset = min(12, H * scale / 4)
         color = "#1f2937"
         arrow_style = dict(
-            fill=color, width=2, arrow=tk.BOTH,
-            arrowshape=(8, 10, 4), tags="dimensions",
+            fill=color, width=5, arrow=tk.BOTH,
+            arrowshape=(12, 15, 6), tags="dimensions",
         )
 
         # Length across the first body panel, width across the second.
