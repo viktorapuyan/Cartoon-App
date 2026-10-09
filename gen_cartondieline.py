@@ -72,13 +72,13 @@ class DielineGeneratorApp:
         ttk.Label(allowance_frame, text="Allowance:").pack(anchor=tk.W)
         ttk.Radiobutton(
             allowance_frame,
-            text="before 10mm",
+            text="Without allowance",
             variable=self.allowance_mode,
             value="before",
         ).pack(anchor=tk.W, pady=(4, 0))
         ttk.Radiobutton(
             allowance_frame,
-            text="with 10mm",
+            text="With allowance",
             variable=self.allowance_mode,
             value="with",
         ).pack(anchor=tk.W)
@@ -88,8 +88,8 @@ class DielineGeneratorApp:
         
 
         # Save Button
-        ttk.Button(self.left_panel, text="Fit to Screen", command=self.reset_scale).pack(fill=tk.X, pady=(10, 5))
-        ttk.Button(self.left_panel, text="Save as SVG", command=self.save_svg).pack(fill=tk.X, pady=(5, 5))
+        self.save_svg_button = ttk.Button(self.left_panel, text="Save as SVG", command=self.save_svg)
+        self._update_save_button_visibility()
 
         # --- Right Panel: Preview Canvas ---
         ttk.Label(self.right_panel, text="Layout Preview", style='Header.TLabel').pack(anchor=tk.W, pady=(0, 10))
@@ -148,7 +148,14 @@ class DielineGeneratorApp:
                 self._updating_dimensions = False
         self.update_preview()
 
+    def _update_save_button_visibility(self):
+        if self.allowance_mode.get() == "with":
+            self.save_svg_button.pack(fill=tk.X, pady=(10, 5))
+        else:
+            self.save_svg_button.pack_forget()
+
     def _allowance_changed(self):
+        self._update_save_button_visibility()
         dimensions = self.get_dimensions()
         if dimensions is not None:
             previous_amount = ALLOWANCE_MM if self._previous_allowance_mode == "with" else 0
@@ -245,8 +252,9 @@ class DielineGeneratorApp:
 
         # --- Dynamic Scaling Logic ---
         padding = 40
-        available_w = c_width - padding * 2
-        available_h = c_height - padding * 2
+        label_space = 64  # Preview-only dimension labels below the layout.
+        available_w = max(1, c_width - padding * 2)
+        available_h = max(1, c_height - padding * 2 - label_space)
         fit_scale = min(available_w / total_width, available_h / total_height)
 
         if self.current_scale is None or window_resize:
@@ -259,7 +267,7 @@ class DielineGeneratorApp:
 
         scale = self.current_scale
         offset_x = (c_width - (total_width * scale)) / 2
-        offset_y = (c_height - (total_height * scale)) / 2
+        offset_y = (c_height - label_space - (total_height * scale)) / 2
 
         def render_line(x1, y1, x2, y2, is_cut):
             sx1, sy1 = offset_x + (x1 * scale), offset_y + (y1 * scale)
@@ -278,7 +286,54 @@ class DielineGeneratorApp:
         for x1, y1, x2, y2 in creases:
             render_line(x1, y1, x2, y2, is_cut=False)
 
+        self._draw_preview_dimensions(L, W, H, scale, offset_x, offset_y)
+
+    def _draw_preview_dimensions(self, L, W, H, scale, offset_x, offset_y):
+        """Draw dimension arrows on the canvas only; SVG exports use paths only."""
+        top = offset_y + (W / 2) * scale
+        bottom = top + H * scale
+        layout_bottom = offset_y + (W + H) * scale
+        label_y = layout_bottom + 36
+        inset = min(12, H * scale / 4)
+        color = "#1f2937"
+        arrow_style = dict(
+            fill=color, width=5, arrow=tk.BOTH,
+            arrowshape=(12, 15, 6), tags="dimensions",
+        )
+
+        # Length across the first body panel, width across the second.
+        for start, end, arrow_y, name, value in (
+            (0, L, top + inset, "L", L),
+            (L, L + W, bottom - inset, "W", W),
+        ):
+            left = offset_x + start * scale
+            right = offset_x + end * scale
+            center = (left + right) / 2
+            self.canvas.create_line(left, arrow_y, right, arrow_y, **arrow_style)
+            self.canvas.create_line(
+                center, arrow_y + 6, center, label_y - 14,
+                fill=color, dash=(5, 5), tags="dimensions",
+            )
+            self.canvas.create_text(
+                center, label_y, text=f"{name}: {value:.2f} mm",
+                fill=color, font=("Segoe UI", 11, "bold"), tags="dimensions",
+            )
+
+        # Height between the body folds in the last panel.
+        center = offset_x + (2 * L + 1.5 * W) * scale
+        self.canvas.create_line(center, top, center, bottom, **arrow_style)
+        self.canvas.create_line(
+            center, bottom + 6, center, label_y - 14,
+            fill=color, dash=(5, 5), tags="dimensions",
+        )
+        self.canvas.create_text(
+            center, label_y, text=f"H: {H:.2f} mm",
+            fill=color, font=("Segoe UI", 11, "bold"), tags="dimensions",
+        )
+
     def save_svg(self):
+        if self.allowance_mode.get() != "with":
+            return
         dims = self.get_dimensions()
         if not dims: 
             messagebox.showwarning("Warning", "Invalid dimensions.")
