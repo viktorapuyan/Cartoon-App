@@ -1,4 +1,3 @@
-import subprocess
 import sys
 import torch
 import tkinter as tk
@@ -7,15 +6,18 @@ from tkinter import messagebox, ttk
 import cv2
 import numpy as np
 
+from gen_cartondieline import DielineGeneratorApp
 from object_detector import ObjectDetector
 
 CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 480
-ARUCO_MARKER_SIZE_MM = 47.5
+# Fixed calibration measured at a camera distance of 30.0 cm.
+REFERENCE_LENGTH_MM = 130.81
+REFERENCE_DISTANCE_PX = 256.01
+MM_PER_PIXEL = REFERENCE_LENGTH_MM / REFERENCE_DISTANCE_PX
 DETECTION_CONFIDENCE = 0.50
 MEASUREMENT_SAMPLE_COUNT = 7
 BLOCKING_CLASSES = {'Not allowed', 'Undersize'}
-SQUARE_MEASUREMENT_CLASSES = {'marker', 'pens'}
 
 
 def resource_path(filename: str) -> Path:
@@ -35,19 +37,6 @@ def cv2_to_photoimage(frame: np.ndarray) -> tk.PhotoImage:
     return tk.PhotoImage(data=ppm_header + rgb.tobytes(), format='PPM')
 
 
-def marker_pixels_per_mm(frame, aruco_detector):
-    """Return the first detected marker's pixel scale for a frame."""
-    corners, ids, _ = aruco_detector.detectMarkers(frame)
-    if ids is None or len(ids) == 0:
-        return None
-
-    marker_corners = corners[0][0]
-    top_width = np.linalg.norm(marker_corners[0] - marker_corners[1])
-    bottom_width = np.linalg.norm(marker_corners[3] - marker_corners[2])
-    marker_width_pixels = (top_width + bottom_width) / 2
-    return marker_width_pixels / ARUCO_MARKER_SIZE_MM
-
-
 class DualCameraApp:
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -63,16 +52,13 @@ class DualCameraApp:
         self.photo1 = None
         self.photo2 = None
         self.measurements_window = None
-
-        self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50)
-        self.aruco_params = cv2.aruco.DetectorParameters()
-        self.aruco_detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
+        self.warning_window = None
+        self.warning_message = None
+        self.warning_shown = False
 
         self.width = None
         self.height = None
         self.length = None
-        self.pixels_per_mm_cam1 = None
-        self.pixels_per_mm_cam2 = None
         self.blocking_detection_active = False
 
         self._configure_styles()
@@ -142,7 +128,7 @@ class DualCameraApp:
         self.measurements_label.grid(row=4, column=0, pady=(0, 4))
 
         self.status_label = ttk.Label(
-            outer, text='Ready - place ArUco markers in both camera views, then capture',
+            outer, text='Ready - position the object 30.0 cm from both cameras, then capture',
             style='Status.TLabel'
         )
         self.status_label.grid(row=5, column=0, pady=(0, 2))
@@ -165,14 +151,48 @@ class DualCameraApp:
         return view
 
     def _init_cameras(self):
-        self.cap1 = self._open_camera(0)
-        self.cap2 = self._open_camera(1)
+        profiles = [(cv2.CAP_ANY, False, 'automatic')]
+        if sys.platform == 'win32':
+            profiles += [
+                (cv2.CAP_DSHOW, True, 'DirectShow / MJPEG / 15 FPS'),
+                (cv2.CAP_DSHOW, False, 'DirectShow / default format'),
+            ]
+
+        for attempt, (backend, use_mjpeg, label) in enumerate(profiles):
+            print(f'Trying both cameras: {label}')
+            self.cap1 = self._open_camera(0, backend, use_mjpeg)
+            self.cap2 = self._open_camera(1, backend, use_mjpeg)
+            ready = [False, False]
+            # Opening a device does not guarantee that it can deliver frames.
+            for _ in range(3):
+                for index, camera in enumerate((self.cap1, self.cap2)):
+                    if camera.isOpened():
+                        received, frame = camera.read()
+                        ready[index] = bool(received and frame is not None and frame.size)
+            for index, received in enumerate(ready):
+                print(f'Camera {index + 1}: {"frames received" if received else "no frames received"}')
+            if all(ready):
+                return
+            if attempt < len(profiles) - 1:
+                # Release BOTH devices before trying another capture backend.
+                self.cap1.release()
+                self.cap2.release()
+
+        print('Camera startup failed: check camera ownership, USB ports, and supported formats.')
 
     @staticmethod
-    def _open_camera(index):
-        camera = cv2.VideoCapture(index)
+    def _open_camera(index, backend=cv2.CAP_ANY, use_mjpeg=False):
+        camera = cv2.VideoCapture(index, backend)
+        if use_mjpeg:
+            camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         camera.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
         camera.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+        if use_mjpeg:
+            camera.set(cv2.CAP_PROP_FPS, 15)
+        if camera.isOpened():
+            print(f'Camera {index + 1}: opened device {index} using {camera.getBackendName()}')
+        else:
+            print(f'Camera {index + 1}: could not open device {index}')
         return camera
 
     def _init_detectors(self):
@@ -197,38 +217,33 @@ class DualCameraApp:
             return None
 
     def _update_frames(self):
-        blocking_detection_this_frame = self._process_camera_frame(
-            self.cap1, self.detector1, self.camera1_view, 'pixels_per_mm_cam1', 1
+        blocking_detection_classes = self._process_camera_frame(
+            self.cap1, self.detector1, self.camera1_view, 1
         )
-        blocking_detection_this_frame |= self._process_camera_frame(
-            self.cap2, self.detector2, self.camera2_view, 'pixels_per_mm_cam2', 2
+        blocking_detection_classes |= self._process_camera_frame(
+            self.cap2, self.detector2, self.camera2_view, 2
         )
-        self._update_safety_state(blocking_detection_this_frame)
+        self._update_safety_state(blocking_detection_classes)
         self.root.after(30, self._update_frames)
 
-    def _process_camera_frame(self, camera, detector, view, calibration_attribute, camera_number):
+    def _process_camera_frame(self, camera, detector, view, camera_number):
         if camera is None or not camera.isOpened():
             view.configure(text=f'Camera {camera_number}\nUnavailable', image='')
-            return False
+            return set()
 
         received, frame = camera.read()
         if not received:
             view.configure(text=f'Camera {camera_number}\nNo frame received', image='')
-            return False
+            return set()
 
-        blocking_detection_detected = False
+        blocking_detection_classes = set()
         if detector is not None:
             frame, detections = detector.detect(frame, draw_boxes=True)
-            blocking_detection_detected = any(
-                detection['class_name'] in BLOCKING_CLASSES for detection in detections
-            )
-
-        corners, ids, _ = self.aruco_detector.detectMarkers(frame)
-        if ids is not None and len(ids) > 0:
-            cv2.aruco.drawDetectedMarkers(frame, corners, ids)
-            scale = marker_pixels_per_mm(frame, self.aruco_detector)
-            if scale is not None:
-                setattr(self, calibration_attribute, scale)
+            blocking_detection_classes = {
+                detection['class_name']
+                for detection in detections
+                if detection['class_name'] in BLOCKING_CLASSES
+            }
 
         photo = cv2_to_photoimage(frame)
         view.configure(image=photo, text='')
@@ -236,27 +251,69 @@ class DualCameraApp:
             self.photo1 = photo
         else:
             self.photo2 = photo
-        return blocking_detection_detected
+        return blocking_detection_classes
 
-    def _update_safety_state(self, blocking_detection_this_frame):
-        if blocking_detection_this_frame != self.blocking_detection_active:
-            self.blocking_detection_active = blocking_detection_this_frame
-            if blocking_detection_this_frame:
-                self.capture_btn.configure(state=tk.DISABLED)
-                self.generate_btn.configure(state=tk.DISABLED)
-                self.status_label.configure(
-                    text='WARNING: "Not allowed" or "Undersize" object detected - capture disabled',
-                    foreground='#c62828'
-                )
-            else:
-                self.capture_btn.configure(state=tk.NORMAL)
-                self.generate_btn.configure(
-                    state=tk.NORMAL if self._has_measurements() else tk.DISABLED
-                )
-                self.status_label.configure(
-                    text='Ready - place ArUco markers in both camera views, then capture',
-                    foreground='#64748b'
-                )
+    def _update_safety_state(self, blocking_detection_classes):
+        blocking_detection_active = bool(blocking_detection_classes)
+        if blocking_detection_active:
+            self.capture_btn.configure(state=tk.DISABLED)
+            self.generate_btn.configure(state=tk.DISABLED)
+            self.status_label.configure(
+                text='Capture disabled while blocking object is visible',
+                foreground='#c62828'
+            )
+
+            warning_class = (
+                'Not allowed' if 'Not allowed' in blocking_detection_classes else 'Undersize'
+            )
+            warning_message = f'WARNING: {warning_class} object'
+            if not self.warning_shown or warning_message != self.warning_message:
+                self._show_warning_popup(warning_message)
+                self.warning_message = warning_message
+                self.warning_shown = True
+        else:
+            self.capture_btn.configure(state=tk.NORMAL)
+            self.generate_btn.configure(
+                state=tk.NORMAL if self._has_measurements() else tk.DISABLED
+            )
+            self.status_label.configure(
+                text='Ready - position the object 30.0 cm from both cameras, then capture',
+                foreground='#64748b'
+            )
+            if self.warning_window is not None and self.warning_window.winfo_exists():
+                self.warning_window.destroy()
+            self.warning_window = None
+            self.warning_message = None
+            self.warning_shown = False
+        self.blocking_detection_active = blocking_detection_active
+
+    def _show_warning_popup(self, warning_message):
+        if self.warning_window is not None and self.warning_window.winfo_exists():
+            self.warning_window.destroy()
+
+        window = tk.Toplevel(self.root)
+        self.warning_window = window
+        window.title('Warning')
+        window.geometry('360x150')
+        window.resizable(False, False)
+        window.transient(self.root)
+        window.configure(bg='#fff4f4')
+        window.update_idletasks()
+        screen_width = window.winfo_screenwidth()
+        screen_height = window.winfo_screenheight()
+        window_width = window.winfo_width()
+        window_height = window.winfo_height()
+        position_x = (screen_width - window_width) // 2
+        position_y = (screen_height - window_height) // 2
+        window.geometry(f'{window_width}x{window_height}+{position_x}+{position_y}')
+
+        content = tk.Frame(window, bg='#fff4f4', padx=24, pady=22)
+        content.pack(fill=tk.BOTH, expand=True)
+        tk.Label(
+            content, text=warning_message, bg='#fff4f4', fg='#c62828',
+            font=('Segoe UI', 13, 'bold')
+        ).pack(pady=(0, 16))
+        ttk.Button(content, text='Close', command=window.destroy).pack()
 
     def _has_measurements(self):
         return all(value is not None for value in (self.width, self.height, self.length))
@@ -280,29 +337,22 @@ class DualCameraApp:
             if not ret1 or not ret2:
                 continue
 
-            pixels_per_mm_cam1 = marker_pixels_per_mm(frame1, self.aruco_detector)
-            pixels_per_mm_cam2 = marker_pixels_per_mm(frame2, self.aruco_detector)
-            if pixels_per_mm_cam1 is None or pixels_per_mm_cam2 is None:
-                continue
-
             _, detections1 = self.detector1.detect(frame1, draw_boxes=False)
             _, detections2 = self.detector2.detect(frame2, draw_boxes=False)
             if not detections1 or not detections2:
                 continue
 
             x1, _, x2, _ = map(int, detections1[0]['bbox'])
-            length = (x2 - x1) / pixels_per_mm_cam1
+            length = (x2 - x1) * MM_PER_PIXEL
             x1, y1, x2, y2 = map(int, detections2[0]['bbox'])
-            width = (x2 - x1) / pixels_per_mm_cam2
-            height = (y2 - y1) / pixels_per_mm_cam2
-            if detections2[0]['class_name'].strip().lower() in SQUARE_MEASUREMENT_CLASSES:
-                width = height + 0.90
+            width = (x2 - x1) * MM_PER_PIXEL
+            height = (y2 - y1) * MM_PER_PIXEL
             measurements.append((length, width, height))
 
         if not measurements:
             messagebox.showwarning(
                 'Capture failed',
-                'Could not collect a valid measurement sample. Keep the object and both ArUco markers visible.',
+                'Could not collect a valid measurement sample. Keep the object visible in both cameras at a distance of 30.0 cm.',
                 parent=self.root,
             )
             return
@@ -343,23 +393,13 @@ class DualCameraApp:
             messagebox.showwarning('Missing measurements', 'Please capture measurements first.', parent=self.root)
             return
 
-        try:
-            dimensions = {
-                'length': float(self.length),
-                'width': float(self.width),
-                'height': float(self.height),
-            }
-            if getattr(sys, 'frozen', False):
-                generator_path = Path(sys.executable).resolve().parent.parent / 'CartonDieline' / 'CartonDieline.exe'
-                args = [str(generator_path)]
-            else:
-                generator_path = Path(__file__).resolve().parent / 'gen_cartondieline.py'
-                args = [sys.executable, str(generator_path)]
-            for name, value in dimensions.items():
-                args.extend([f'--{name}', str(value)])
-            subprocess.Popen(args)
-        except Exception as exc:
-            messagebox.showerror('Generation failed', f'Failed to generate dieline:\n{exc}', parent=self.root)
+        generator_window = tk.Toplevel(self.root)
+        DielineGeneratorApp(
+            generator_window,
+            initial_length=self.length,
+            initial_width=self.width,
+            initial_height=self.height,
+        )
 
     def close(self):
         if self.cap1 is not None:
